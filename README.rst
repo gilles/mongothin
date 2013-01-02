@@ -46,3 +46,14 @@ This is how we define a resource::
         _collection = 'user'
 
 A Resource is heavily oriented to work with _id fields.
+
+Data mapping
+------------
+
+Mongothin does not do data mapping. pymongo's input and output are dictionaries, so are Mongothin's. If you need input validation
+you can use another library such as:
+
+* `onctuous <https://bitbucket.org/Ludia/onctuous>`
+* `validino <https://github.com/alecthomas/validino>`
+* `FormEncode <http://www.formencode.org/en/latest/>`
+* `Schematics <https://github.com/j2labs/schematics>`
