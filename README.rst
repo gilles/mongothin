@@ -4,23 +4,21 @@ Mongothin
 
 Mongothin is a small wrapper around pymongo. It allows you to do this::
 
-    result = UserResource.find_one('1234')
+    result = UserResource.find_one('XXXX')
 
 Instead of::
 
     client = MongoClient()
-    result = client['database']['users'].find_one()
+    result = client['database']['users'].find_one(ObjectId('XXXX'))
 
-Mongothin also handles retries (done) and exponential backoff (todo).
+Mongothin also handles retries and exponential backoff.
 
-======
-Client
-======
+===========
+Connections
+===========
 
-Mongothin handles clients configuration pretty much the way MongoEngine does. Actually the original code is
-taken from MongoEngine and has been slightly modified.
-
-TODO: documentation and example
+Mongothin handles clients configuration the way MongoEngine does. Actually the code is
+taken from MongoEngine.
 
 ========
 Resource
@@ -40,10 +38,13 @@ This is how we define a resource::
         _id_type = ObjectId
         # Number of retries
         _retries = 2
-        # Output class, :see:pymongo.collection.find
-        _as_class = dict
+        # Exponential backoff base
+        _delay = 0.01
         # Collection. If not specified the name of the class is used.
         _collection = 'user'
+        # Shard. Make sure the shard info is in the specs
+        _shard = (shard_function, shard_key,)
+
 
 A Resource is heavily oriented to work with _id fields.
 
@@ -57,9 +58,3 @@ you can use another library such as:
 * `validino <https://github.com/alecthomas/validino>`_
 * `FormEncode <http://www.formencode.org/en/latest/>`_
 * `Schematics <https://github.com/j2labs/schematics>`_
-
-====
-TODO
-====
-
-* Sharding

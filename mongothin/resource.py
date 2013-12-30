@@ -1,36 +1,28 @@
 # coding=utf-8
+
+"""
+The main ressource object
+"""
+
+import logging
 from bson import ObjectId
 from pymongo.errors import AutoReconnect
-from mongothin.clients import DEFAULT_CONNECTION_NAME, get_db
+import time
+from mongothin import raw_updater, default_updater
+from mongothin.connection import DEFAULT_CONNECTION_NAME, get_db
 
 
 class ResourceMeta(type):
-    """Resource metaclass to get the collection name based on the class name
-
+    """
+    Resource metaclass to get the collection name based on the class name.
+    Also adds a logger
     """
 
     def __new__(mcs, name, bases, dct):
         if '_collection' not in dct:
             dct['_collection'] = name
+        dct['log'] = logging.getLogger('%s.%s' % (dct['__module__'], name))
         return super(ResourceMeta, mcs).__new__(mcs, name, bases, dct)
-
-
-def raw_updater(data):
-    """
-    Pass through updater
-    :param data:
-    :return: The data as is
-    """
-    return data
-
-
-def default_updater(data):
-    """
-    The default updated, takes a dict and just add $set. This will not handle embedded documents.
-    :param data:
-    :return:
-    """
-    return {'$set': data}
 
 
 class MissingIdsException(Exception):
@@ -65,53 +57,76 @@ class Resource(object):
         >>>     _id_type = ObjectId
         >>>     # Number of retries
         >>>     _retries = 2
-        >>>     # Output class, :see:pymongo.collection.find
-        >>>     _as_class = dict
+        >>>     # Exponential backoff base
+        >>>     _delay = 0.01
         >>>     # Collection. If not specified the name of the class is used.
         >>>     _collection = 'user'
+        >>>     # Shard info. Make sure the query contains the shard info
+        >>>     _shard = (sharder_function, field,)
 
     """
 
     __metaclass__ = ResourceMeta
 
     _alias = DEFAULT_CONNECTION_NAME
-    _id_type = ObjectId
-    _retries = 0
 
-    _as_class = None
+    _id_type = ObjectId
+
+    _retries = 0
+    _delay = 0.01
+
+    _shard = None
 
     @classmethod
-    def _make_specs(cls, doc_id, specs=None):
+    def _make_specs(cls, doc_id=None, specs=None):
         """
         Combine id and extra specs
         :param doc_id: The id of the object
         :param specs:
         :return:
         """
-        final_specs = {'_id': cls._id_type(doc_id)}
+        final_specs = {}
+        if doc_id:
+            final_specs['_id'] = cls._id_type(doc_id)
         if specs:
             final_specs.update(specs)
+        cls._add_shard(final_specs)
         return final_specs
 
     @classmethod
+    def _add_shard(cls, specs):
+        """
+        Make sure shard information is here
+        """
+        if cls._shard:
+            try:
+                shard = cls._shard[0](specs)
+                if shard:
+                    specs[cls._shard[1]] = shard
+            except Exception as exc:
+                cls.log.warning("Can't compute shard value for: %s -> %s" % (specs, exc))
+        return specs
+
+    @classmethod
     def _get_db(cls):
-        return get_db(cls._alias)
+        db = get_db(cls._alias)
+        return db
 
     @classmethod
     def _get_collection(cls):
-        return cls._get_db()[getattr(cls, '_collection')]
+        collection = cls._get_db()[getattr(cls, '_collection')]
+        return collection
 
     @classmethod
     def _make_call(cls, function, *args, **kwargs):
-        tries = 0
-        while tries <= cls._retries:
+        for n in xrange(0, cls._retries + 1):
             try:
                 collection = cls._get_collection()
                 function = getattr(collection, function)
                 return function(*args, **kwargs)
-            except AutoReconnect as e:
-                tries += 1
-        raise e
+            except AutoReconnect:
+                time.sleep(cls._delay * (2 ** n))
+        raise
 
     @classmethod
     def insert(cls, document, doc_id=None):
@@ -127,6 +142,8 @@ class Resource(object):
             doc_id = doc_id()
 
         document['_id'] = doc_id
+        cls._add_shard(document)
+
         cls._make_call('insert', document)
         return doc_id
 
@@ -157,7 +174,6 @@ class Resource(object):
         :param doc_id: The document _id to modify
         :param document: The update document. A dictionnary to which $set will be added®
         :param specs: Extra specs to select the document. Will be combined with doc_id
-        :param updater: A callable used to mutate the update document before making the call
         :param args: Extra positional parameters for the call to :method:pymongo.collections.update
         :param kwargs: Extra keyword parameters for the call to :method:pymongo.collections.update
         :rtype : int
@@ -167,6 +183,8 @@ class Resource(object):
     @classmethod
     def remove(cls, doc_id, specs=None):
         """ Remove an existing document
+        :param doc_id: The id of the document to remove. This can be None and use specs only
+        :param specs: Extra specs to locate the document to remove
         """
         ret = cls._make_call('remove', cls._make_specs(doc_id, specs))
         if ret:
@@ -175,34 +193,40 @@ class Resource(object):
     @classmethod
     def find_one(cls, doc_id, specs=None, *args, **kwargs):
         """ Find one document
+        :param doc_id: The id of the document to find. This can be None and use specs only
+        :param specs: Extra specs to locate the document
+        :param args: Passed to the driver as is
+        :param kwargs: Passed to the driver as is
         """
-        if cls._as_class:
-            kwargs['as_class'] = cls._as_class
-        return cls._make_call('find_one', cls._make_specs(doc_id, specs),
-                              *args, **kwargs)
+        return cls._make_call('find_one', cls._make_specs(doc_id, specs), *args, **kwargs)
 
     @classmethod
     def find(cls, specs, skip=0, limit=10, *args, **kwargs):
         """ Find several documents
+        :param specs: Extra specs to locate the document
+        :param skip: Documents to skip. Since you want to paginate when querying multiple documents it's here and not in kwargs
+        :param limit: Documents to return. Since you want to paginate when querying multiple documents it's here and not in kwargs
+        :param args: Passed to the driver as is
+        :param kwargs: Passed to the driver as is
         """
-        if cls._as_class:
-            kwargs['as_class'] = cls._as_class
-        return cls._make_call('find', specs,
-                              skip=skip, limit=limit,
-                              *args, **kwargs)
+        return cls._make_call('find', specs, skip=skip, limit=limit, *args, **kwargs)
 
     @classmethod
     def find_in(cls, doc_ids, *args, **kwargs):
         """ Find documents in a list if ids
+        :param doc_ids: A list of ids to find
+        :param args: Passed to the driver as is
+        :param kwargs: Passed to the driver as is
         """
-        if cls._as_class:
-            kwargs['as_class'] = cls._as_class
-        specs = {'_id': {'$in': [cls._id_type(id) for id in doc_ids]}}
+        specs = {'_id': {'$in': [cls._id_type(_id) for _id in doc_ids]}}
         return cls._make_call('find', specs, *args, **kwargs)
 
     @classmethod
     def resolve(cls, doc_ids, *args, **kwargs):
         """ Find documents in a list of ids. Raise an exception if an id is missing
+        :param doc_ids: A list of ids to find
+        :param args: Passed to the driver as is
+        :param kwargs: Passed to the driver as is
         """
         from_mongo = []
         if doc_ids:

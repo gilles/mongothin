@@ -1,47 +1,14 @@
 # coding=utf-8
 import unittest
+
 from bson import ObjectId
-from pymongo.son_manipulator import SONManipulator
-import mongothin.clients
+
+import mongothin.connection
 from mongothin.resource import Resource, MissingIdsException
 
 
 class MongoResource(Resource):
     _collection = 'argh'
-
-
-class Manipulator(SONManipulator):
-    def __init__(self, param=None):
-        super(Manipulator, self).__init__()
-        self.param = param
-
-    def transform_incoming(self, son, collection):
-        son['manipulated'] = self.param
-        return son
-
-
-class ManipulatedResource(Resource):
-    _alias = 'manipulator'
-    _collection = 'manipulated'
-
-
-class DocumentClass(dict):
-    def __init__(self, *args, **kwargs):
-        super(DocumentClass, self).__init__(*args, **kwargs)
-
-    def to_api(self):
-        self['toapi'] = True
-        return self
-
-
-class DocumentResource(Resource):
-    _alias = 'documentclass'
-    _collection = 'documentclass'
-
-
-class AsClassResource(Resource):
-    _collection = 'asclass'
-    _as_class = DocumentClass
 
 
 class TestResource(unittest.TestCase):
@@ -50,8 +17,8 @@ class TestResource(unittest.TestCase):
 
         """
         super(TestResource, self).setUp()
-        mongothin.clients.register_connection('default', 'mongothin')
-        self.client = mongothin.clients.get_client('default')
+        mongothin.connection.register_connection('default', 'mongothin')
+        self.client = mongothin.connection.get_connection('default')
 
     def tearDown(self):
         """Teardown
@@ -127,39 +94,3 @@ class TestResource(unittest.TestCase):
         test_with = [str(oid) for oid in object_ids[:5]]
         test_with.append(str(ObjectId()))
         self.assertRaises(MissingIdsException, MongoResource.resolve, test_with)
-
-    def test_manipulators(self):
-        config = {
-            'host': 'localhost',
-            'manipulators': {
-                'test.functional.test_resource.Manipulator': {
-                    'param': 'argh'
-                }
-            }
-        }
-        mongothin.clients.register_connection('manipulator', 'mongothin', **config)
-        object_id = ObjectId()
-        ManipulatedResource.insert({'test': 'test'}, object_id)
-        result = ManipulatedResource.find_one(object_id)
-        self.assertDictEqual(result, {
-            '_id': object_id,
-            'test': 'test',
-            'manipulated': 'argh'
-        })
-
-    def test_document_class(self):
-        config = {
-            'host': 'localhost',
-            'document_class': 'test.functional.test_resource.DocumentClass'
-        }
-        mongothin.clients.register_connection('documentclass', 'mongothin', **config)
-        object_id = ObjectId()
-        DocumentResource.insert({'test': 'test'}, object_id)
-        result = DocumentResource.find_one(object_id)
-        self.assertTrue(result.to_api()['toapi'])
-
-    def test_as_class(self):
-        object_id = ObjectId()
-        AsClassResource.insert({'test': 'test'}, object_id)
-        result = AsClassResource.find_one(object_id)
-        self.assertTrue(result.to_api()['toapi'])
